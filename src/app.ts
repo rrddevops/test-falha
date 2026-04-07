@@ -11,6 +11,8 @@ import { allQuery, getQuery, initializeDatabase, runQuery } from "./db";
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const csrfToken = process.env.CSRF_TOKEN || "change-me-csrf-token";
+const allowedOrigin = process.env.APP_ORIGIN || `http://localhost:${port}`;
 
 const upload = multer({ dest: path.join(process.cwd(), "uploads") });
 
@@ -24,13 +26,71 @@ initializeDatabase();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// DAST: CORS totalmente aberto para qualquer origem.
-app.use(cors({ origin: "*", credentials: true }));
+app.disable("x-powered-by");
 
-// DAST: headers de seguranca como CSP e HSTS nao sao configurados.
+app.use(
+  cors({
+    origin: allowedOrigin,
+    credentials: true,
+    methods: ["GET", "HEAD", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Authorization", "Content-Type", "X-CSRF-Token"]
+  })
+);
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function isSafeOrigin(originOrReferer?: string): boolean {
+  if (!originOrReferer) {
+    return false;
+  }
+
+  try {
+    return new URL(originOrReferer).origin === allowedOrigin;
+  } catch {
+    return false;
+  }
+}
+
 app.use((request: Request, response: Response, next: NextFunction) => {
-  response.setHeader("X-Powered-By", "Express 4 vulnerable-demo");
-  response.setHeader("X-Training-Environment", "intentionally-vulnerable");
+  response.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+  response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("X-Frame-Options", "DENY");
+  response.setHeader("Permissions-Policy", "camera=(), geolocation=(), microphone=()");
+  response.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  response.setHeader("Cache-Control", "no-store");
+
+  if (request.method === "GET") {
+    response.setHeader("X-CSRF-Token", csrfToken);
+  }
+
+  next();
+});
+
+app.use((request: Request, response: Response, next: NextFunction) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+    next();
+    return;
+  }
+
+  const origin = request.headers.origin;
+  const referer = request.headers.referer;
+  const hasOriginContext = Boolean(origin || referer);
+  const hasTrustedOrigin = isSafeOrigin(origin) || isSafeOrigin(referer);
+  const sentToken = request.headers["x-csrf-token"];
+
+  if (sentToken !== csrfToken || (hasOriginContext && !hasTrustedOrigin)) {
+    response.status(403).json({ message: "CSRF validation failed" });
+    return;
+  }
+
   next();
 });
 
@@ -65,7 +125,7 @@ app.get("/", async (_request: Request, response: Response) => {
         <h1>Vulnerable Demo Application</h1>
         <p>Use POST /login, CRUD em /users, POST /upload, GET /search e GET /admin.</p>
         <h2>Usuarios cadastrados</h2>
-        <pre>${JSON.stringify(users, null, 2)}</pre>
+        <pre>${escapeHtml(JSON.stringify(users, null, 2))}</pre>
       </body>
     </html>
   `);
@@ -120,8 +180,8 @@ app.get("/users/:id/profile", async (request: Request, response: Response) => {
     <html>
       <head><title>Profile</title></head>
       <body>
-        <h1>${user?.username || "unknown"}</h1>
-        <div>${user?.bio || ""}</div>
+        <h1>${escapeHtml(user?.username || "unknown")}</h1>
+        <div>${escapeHtml(user?.bio || "")}</div>
       </body>
     </html>
   `);
@@ -197,9 +257,12 @@ app.get("/search", async (request: Request, response: Response) => {
     <html>
       <head><title>Search</title></head>
       <body>
-        <h1>Resultados para: ${query}</h1>
+        <h1>Resultados para: ${escapeHtml(query)}</h1>
         ${results
-          .map((user: any) => `<article><h2>${user.username}</h2><div>${user.bio}</div></article>`)
+          .map(
+            (user: any) =>
+              `<article><h2>${escapeHtml(user.username)}</h2><div>${escapeHtml(user.bio)}</div></article>`
+          )
           .join("")}
       </body>
     </html>

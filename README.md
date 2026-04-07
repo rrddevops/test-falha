@@ -16,6 +16,8 @@ Este projeto e propositalmente vulneravel e existe apenas para fins educacionais
 
 ```bash
 npm install
+set APP_ORIGIN=http://localhost:3000
+set CSRF_TOKEN=change-me-csrf-token
 npm run dev
 ```
 
@@ -28,6 +30,12 @@ docker compose up --build
 ```
 
 O banco SQLite fica em `./data/vulnerable.sqlite` e os uploads em `./uploads`.
+
+## Observacoes desta branch
+
+- As respostas agora enviam headers de hardening como `Content-Security-Policy`, `X-Frame-Options` e `X-Content-Type-Options`.
+- Requisicoes `POST`, `PUT` e `DELETE` exigem o header `X-CSRF-Token` com o mesmo valor de `CSRF_TOKEN`.
+- A origem permitida por CORS e pela validacao de origem e controlada por `APP_ORIGIN`.
 
 ## Endpoints principais
 
