@@ -40,6 +40,7 @@ O banco SQLite fica em `./data/vulnerable.sqlite` e os uploads em `./uploads`.
 ## Endpoints principais
 
 - `POST /login`
+- `GET /csrf-token`
 - `GET /users`
 - `GET /users/:id`
 - `POST /users`
@@ -92,6 +93,13 @@ Dependencias antigas e propositalmente vulneraveis foram fixadas em [package.jso
 - O campo `bio` dos usuarios permite armazenar payloads HTML/JavaScript.
 - O endpoint `/admin` executa expressoes enviadas por query string.
 - O login nao possui rate limiting ou MFA.
+
+## Ajustes para retest de AppSec
+
+- O endpoint `GET /csrf-token` retorna o token CSRF atual e tambem define o cookie `csrf-token`.
+- Requisicoes `POST`, `PUT` e `DELETE` agora exigem o header `X-CSRF-Token` com o mesmo valor do cookie `csrf-token`.
+- A aplicacao agora responde com headers de endurecimento, incluindo `Content-Security-Policy`, `X-Content-Type-Options` e `X-Frame-Options`.
+- O rendering HTML em `/search`, `/users/:id/profile` e `/` passou a escapar conteudo dinamico antes de enviar a resposta.
 
 ## Aviso
 

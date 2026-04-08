@@ -11,8 +11,12 @@ import { allQuery, getQuery, initializeDatabase, runQuery } from "./db";
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
-const csrfToken = process.env.CSRF_TOKEN || "change-me-csrf-token";
-const allowedOrigin = process.env.APP_ORIGIN || `http://localhost:${port}`;
+const host = process.env.HOST || "0.0.0.0";
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const safeMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 
 const upload = multer({ dest: path.join(process.cwd(), "uploads") });
 
@@ -21,80 +25,97 @@ const JWT_SECRET = "hardcoded-secret-demo-key";
 // SAST: uso de criptografia fraca com MD5 em vez de algoritmo resistente a brute force.
 const ADMIN_PASSWORD_HASH = crypto.createHash("md5").update("admin").digest("hex");
 
+app.disable("x-powered-by");
+
 initializeDatabase();
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.disable("x-powered-by");
-
+// DAST: CORS totalmente aberto para qualquer origem.
 app.use(
   cors({
-    origin: allowedOrigin,
+    origin(origin, callback) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      callback(null, allowedOrigins.includes(origin));
+    },
     credentials: true,
-    methods: ["GET", "HEAD", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Authorization", "Content-Type", "X-CSRF-Token"]
+    exposedHeaders: ["X-CSRF-Token"]
   })
 );
 
-function escapeHtml(value: unknown): string {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function isSafeOrigin(originOrReferer?: string): boolean {
-  if (!originOrReferer) {
-    return false;
-  }
-
-  try {
-    return new URL(originOrReferer).origin === allowedOrigin;
-  } catch {
-    return false;
-  }
-}
-
 app.use((request: Request, response: Response, next: NextFunction) => {
-  response.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
-  response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  const csrfToken = getOrCreateCsrfToken(request, response);
+  const isSecureRequest = request.secure || request.header("x-forwarded-proto") === "https";
+
+  response.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; upgrade-insecure-requests"
+  );
+  response.setHeader("Referrer-Policy", "no-referrer");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("X-Frame-Options", "DENY");
+  response.setHeader("X-DNS-Prefetch-Control", "off");
+  response.setHeader("Pragma", "no-cache");
+  response.setHeader("Expires", "0");
   response.setHeader("Permissions-Policy", "camera=(), geolocation=(), microphone=()");
-  response.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-  response.setHeader("Cache-Control", "no-store");
-
-  if (request.method === "GET") {
-    response.setHeader("X-CSRF-Token", csrfToken);
+  response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  if (isSecureRequest) {
+    response.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   }
-
-  next();
-});
-
-app.use((request: Request, response: Response, next: NextFunction) => {
-  if (["GET", "HEAD", "OPTIONS"].includes(request.method)) {
-    next();
-    return;
-  }
-
-  const origin = request.headers.origin;
-  const referer = request.headers.referer;
-  const hasOriginContext = Boolean(origin || referer);
-  const hasTrustedOrigin = isSafeOrigin(origin) || isSafeOrigin(referer);
-  const sentToken = request.headers["x-csrf-token"];
-
-  if (sentToken !== csrfToken || (hasOriginContext && !hasTrustedOrigin)) {
-    response.status(403).json({ message: "CSRF validation failed" });
-    return;
-  }
-
+  response.setHeader("X-CSRF-Token", csrfToken);
   next();
 });
 
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    };
+
+    return entities[character] || character;
+  });
+}
+
+function parseCookies(request: Request): Record<string, string> {
+  const header = request.headers.cookie || "";
+
+  return header.split(";").reduce<Record<string, string>>((cookies, cookie) => {
+    const [rawName, ...rawValue] = cookie.split("=");
+    const name = rawName?.trim();
+
+    if (!name) {
+      return cookies;
+    }
+
+    cookies[name] = decodeURIComponent(rawValue.join("=").trim());
+    return cookies;
+  }, {});
+}
+
+function getOrCreateCsrfToken(request: Request, response: Response): string {
+  const cookies = parseCookies(request);
+  const existingToken = cookies["csrf-token"];
+
+  if (existingToken) {
+    return existingToken;
+  }
+
+  const token = crypto.randomBytes(32).toString("hex");
+  response.append("Set-Cookie", `csrf-token=${token}; Path=/; SameSite=Strict`);
+  return token;
+}
 
 function createWeakToken(username: string): string {
   const signature = crypto.createHash("sha1").update(`${username}:${JWT_SECRET}`).digest("hex");
@@ -116,6 +137,26 @@ async function optionalAuth(request: Request, _response: Response, next: NextFun
 
 app.use(optionalAuth);
 
+app.use((request: Request, response: Response, next: NextFunction) => {
+  if (safeMethods.has(request.method)) {
+    next();
+    return;
+  }
+
+  const cookies = parseCookies(request);
+  const cookieToken = cookies["csrf-token"];
+  const headerToken = request.header("x-csrf-token");
+
+  if (!cookieToken || !headerToken || cookieToken !== headerToken) {
+    response.status(403).json({
+      message: "CSRF validation failed"
+    });
+    return;
+  }
+
+  next();
+});
+
 app.get("/", async (_request: Request, response: Response) => {
   const users = await allQuery("SELECT id, username, role, bio FROM users");
   response.send(`
@@ -129,6 +170,10 @@ app.get("/", async (_request: Request, response: Response) => {
       </body>
     </html>
   `);
+});
+
+app.get("/csrf-token", (request: Request, response: Response) => {
+  response.json({ csrfToken: getOrCreateCsrfToken(request, response) });
 });
 
 app.post("/login", async (request: Request, response: Response) => {
@@ -175,13 +220,15 @@ app.get("/users/:id", async (request: Request, response: Response) => {
 app.get("/users/:id/profile", async (request: Request, response: Response) => {
   const sql = `SELECT id, username, role, bio FROM users WHERE id = ${request.params.id}`;
   const user = await getQuery(sql);
+  const username = escapeHtml(String(user?.username || "unknown"));
+  const bio = escapeHtml(String(user?.bio || ""));
 
   response.send(`
     <html>
       <head><title>Profile</title></head>
       <body>
-        <h1>${escapeHtml(user?.username || "unknown")}</h1>
-        <div>${escapeHtml(user?.bio || "")}</div>
+        <h1>${username}</h1>
+        <div>${bio}</div>
       </body>
     </html>
   `);
@@ -246,6 +293,7 @@ app.post("/upload", upload.single("file"), async (request: Request, response: Re
 
 app.get("/search", async (request: Request, response: Response) => {
   const query = String(request.query.q || "");
+  const safeQuery = escapeHtml(query);
 
   // SAST: SQL Injection com concatenacao direta.
   const sql = `SELECT id, username, role, bio FROM users WHERE username LIKE '%${query}%' OR bio LIKE '%${query}%'`;
@@ -257,11 +305,11 @@ app.get("/search", async (request: Request, response: Response) => {
     <html>
       <head><title>Search</title></head>
       <body>
-        <h1>Resultados para: ${escapeHtml(query)}</h1>
+        <h1>Resultados para: ${safeQuery}</h1>
         ${results
           .map(
             (user: any) =>
-              `<article><h2>${escapeHtml(user.username)}</h2><div>${escapeHtml(user.bio)}</div></article>`
+              `<article><h2>${escapeHtml(String(user.username || ""))}</h2><div>${escapeHtml(String(user.bio || ""))}</div></article>`
           )
           .join("")}
       </body>
@@ -301,6 +349,6 @@ app.use((error: Error, _request: Request, response: Response, _next: NextFunctio
   });
 });
 
-app.listen(port, () => {
-  console.log(`Vulnerable demo listening on port ${port}`);
+app.listen(port, host, () => {
+  console.log(`Vulnerable demo listening on ${host}:${port}`);
 });
