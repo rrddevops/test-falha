@@ -99,7 +99,7 @@ Dependencias antigas e propositalmente vulneraveis foram fixadas em [package.jso
 - O endpoint `GET /csrf-token` retorna o token CSRF atual e tambem define o cookie `csrf-token`.
 - Requisicoes `POST`, `PUT` e `DELETE` agora exigem o header `X-CSRF-Token` com o mesmo valor do cookie `csrf-token`.
 - A aplicacao agora responde com headers de endurecimento, incluindo `Content-Security-Policy`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` e diretivas de cache restritivas.
-- O container passa a subir com bind em `0.0.0.0` e mapeamento explicito de `host.docker.internal`, reduzindo falhas de alcance em scanners executados em Linux.
+- O container passa a subir com bind em `0.0.0.0`, hostname `host.docker.internal`, alias de rede `host.docker.internal` e mapeamento explicito desse host, reduzindo falhas de resolucao quando o scanner executa em container.
 - O rendering HTML em `/search`, `/users/:id/profile` e `/` passou a escapar conteudo dinamico antes de enviar a resposta.
 
 ## Aviso

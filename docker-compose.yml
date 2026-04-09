@@ -2,6 +2,7 @@ version: '3.9'
 services:
   app:
     build: .
+    hostname: host.docker.internal
     ports:
       - "3000:3000"
     environment:
@@ -12,3 +13,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
+    networks:
+      default:
+        aliases:
+          - host.docker.internal
